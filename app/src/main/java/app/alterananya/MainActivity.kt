@@ -62,6 +62,13 @@ class MainActivity : AppCompatActivity() {
         top.addView(setBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(top)
 
+        val hfRow = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL; setPadding(pad, 0, pad, 0) }
+        hfRow.addView(Ui.button(c, "Hands-free baat-cheet", "Hands-free voice baat-cheet ka screen kholo") { startActivity(Intent(c, ConversationActivity::class.java)) },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        hfRow.addView(Ui.button(c, "Permissions", "Permissions setup kholo") { startActivity(Intent(c, PermissionsActivity::class.java)) },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        root.addView(hfRow)
+
         modeBtn = Ui.button(c, "", null) { toggleMode() }
         root.addView(modeBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(pad, 0, pad, 0) })
 

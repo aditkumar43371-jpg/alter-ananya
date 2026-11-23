@@ -82,7 +82,11 @@ class Speaker(ctx: Context) {
                 val id = if (last) "$base#last" else "$base#$i"
                 if (last && onDone != null) callbacks[id] = onDone
                 val mode = if (i == 0 && flush) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
-                val r = tts?.speak(c, mode, Bundle(), id)
+                val pb = Bundle()
+                Tone.volume(Personalities.current())?.let { pb.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, it) }
+                val r = tts?.speak(c, mode, pb, id)
+                val gap = Tone.pauseMs(Personalities.current())
+                if (!last && gap > 0) tts?.playSilentUtterance(gap.toLong(), TextToSpeech.QUEUE_ADD, "$base#gap$i")
                 if (r == TextToSpeech.ERROR) { callbacks.remove(id)?.let { cb -> main.post { cb() } } }
             }
         }
@@ -100,8 +104,8 @@ class Speaker(ctx: Context) {
                 val v = t.voices?.firstOrNull { it.name == vn }
                 if (v != null) t.setVoice(v)
             }
-            t.setSpeechRate((p.speed * S.float(S.SPEED)).coerceIn(0.3f, 3.0f))
-            t.setPitch((p.pitch * S.float(S.PITCH)).coerceIn(0.3f, 2.5f))
+            t.setSpeechRate((p.speed * S.float(S.SPEED) * Tone.rate(p)).coerceIn(0.3f, 3.0f))
+            t.setPitch((p.pitch * S.float(S.PITCH) * Tone.pitch(p)).coerceIn(0.3f, 2.5f))
         } catch (_: Throwable) { }
     }
 

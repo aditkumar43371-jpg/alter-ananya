@@ -11,7 +11,10 @@ data class Personality(
     val speed: Float,
     val pitch: Float,
     val prompt: String,
-    val builtin: Boolean
+    val builtin: Boolean,
+    val wake: String = "",       // own wake phrase, "" = the global one
+    val greeting: String = "",   // spoken when this personality is chosen
+    val preset: String = ""      // tone preset id, "" = the global one
 )
 
 /**
@@ -85,7 +88,63 @@ object Personalities {
 
     fun all(): List<Personality> = builtin + custom()
 
-    fun byId(id: String): Personality = all().firstOrNull { it.id == id } ?: builtin[0]
+    fun byId(id: String): Personality = withOverride(all().firstOrNull { it.id == id } ?: builtin[0])
+
+    // ---------- per-personality edits (built-ins are never changed, edits are layered on top) ----------
+    private fun overrides(): JSONObject = try { JSONObject(S.str(S.PERS_OVR).ifBlank { "{}" }) } catch (_: Throwable) { JSONObject() }
+
+    private fun withOverride(p: Personality): Personality {
+        if (!S.bool(S.F_PERSCUSTOM)) return p
+        val o = overrides().optJSONObject(p.id) ?: return p
+        return p.copy(
+            name = o.optString("name").ifBlank { p.name }.take(60),
+            tone = o.optString("tone").ifBlank { p.tone }.take(200),
+            speed = if (o.has("speed")) o.optDouble("speed", p.speed.toDouble()).toFloat().coerceIn(0.5f, 2.0f) else p.speed,
+            pitch = if (o.has("pitch")) o.optDouble("pitch", p.pitch.toDouble()).toFloat().coerceIn(0.5f, 2.0f) else p.pitch,
+            wake = o.optString("wake").take(40),
+            greeting = o.optString("greeting").take(200),
+            preset = o.optString("preset").take(20).let { if (Tone.byId(it) != null) it else "" }
+        )
+    }
+
+    fun hasOverride(id: String) = overrides().has(id)
+
+    fun setOverride(id: String, name: String, tone: String, speed: Float, pitch: Float, wake: String, greeting: String, preset: String) {
+        val all = overrides()
+        all.put(id, JSONObject().put("name", name.take(60)).put("tone", tone.take(200)).put("speed", speed.toDouble())
+            .put("pitch", pitch.toDouble()).put("wake", wake.take(40)).put("greeting", greeting.take(200)).put("preset", preset))
+        S.putStr(S.PERS_OVR, all.toString())
+    }
+
+    fun clearOverride(id: String) { val o = overrides(); o.remove(id); S.putStr(S.PERS_OVR, o.toString()) }
+
+    /** keeps only well-formed entries (used by import) */
+    fun sanitizeOverrides(raw: String): String {
+        val src = try { JSONObject(raw) } catch (_: Throwable) { return "{}" }
+        val out = JSONObject()
+        for (k in src.keys()) {
+            val o = src.optJSONObject(k) ?: continue
+            out.put(k.take(40), JSONObject().put("name", o.optString("name").take(60)).put("tone", o.optString("tone").take(200))
+                .put("speed", o.optDouble("speed", 1.0).coerceIn(0.5, 2.0)).put("pitch", o.optDouble("pitch", 1.0).coerceIn(0.5, 2.0))
+                .put("wake", o.optString("wake").take(40)).put("greeting", o.optString("greeting").take(200))
+                .put("preset", o.optString("preset").take(20)))
+        }
+        return out.toString()
+    }
+
+    /** copy as a new custom personality (works for built-in and custom ones) */
+    fun duplicate(id: String): Personality {
+        val p = byId(id)
+        val np = p.copy(id = newId(), name = (p.name + " (copy)").take(60), builtin = false)
+        upsert(np)
+        return np
+    }
+
+    /** the wake phrase of the current personality, or the global one */
+    fun wakePhrase(): String {
+        val w = if (S.bool(S.F_PERSCUSTOM)) current().wake.trim() else ""
+        return w.ifBlank { S.str(S.WAKE_PHRASE) }
+    }
     fun current(): Personality = byId(S.str(S.PERSONALITY))
 
     fun saveCustom(list: List<Personality>) {
@@ -103,6 +162,7 @@ object Personalities {
 
     fun delete(id: String) {
         saveCustom(custom().filter { it.id != id })
+        clearOverride(id)
         if (S.str(S.PERSONALITY) == id) S.putStr(S.PERSONALITY, "dost")
     }
 
@@ -111,6 +171,7 @@ object Personalities {
     private fun toJson(p: Personality) = JSONObject()
         .put("id", p.id).put("name", p.name).put("tone", p.tone).put("language", p.language)
         .put("speed", p.speed.toDouble()).put("pitch", p.pitch.toDouble()).put("prompt", p.prompt)
+        .put("wake", p.wake).put("greeting", p.greeting).put("preset", p.preset)
 
     private fun fromJson(o: JSONObject?): Personality? {
         if (o == null) return null
@@ -122,7 +183,9 @@ object Personalities {
             o.optString("language").take(20),
             o.optDouble("speed", 1.0).toFloat().coerceIn(0.5f, 2.0f),
             o.optDouble("pitch", 1.0).toFloat().coerceIn(0.5f, 2.0f),
-            o.optString("prompt").take(4000), false
+            o.optString("prompt").take(4000), false,
+            o.optString("wake").take(40), o.optString("greeting").take(200),
+            o.optString("preset").take(20).let { if (Tone.byId(it) != null) it else "" }
         )
     }
 

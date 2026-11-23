@@ -114,11 +114,54 @@ class SettingsActivity : AppCompatActivity() {
             startActivity(Intent(c, A11yIntroActivity::class.java))
         }
 
+        // ---------- hands-free ----------
+        f.heading("Hands-free (hamesha sunna)")
+        f.text("Chalu karne par Ananya background mein wake phrase ka intezaar karti hai, aur notification hamesha dikhta hai. Wake phrase ke baad, aapki bolti hui request phone ki speech service se text banti hai (Google ko audio ja sakta hai), phir wo text aapki chuni hui AI service ko jaata hai. Wake phrase ke intezaar mein koi recording save ya upload nahi hoti.")
+        f.check("Hands-free chalu (hamesha sunna)", S.bool(S.HANDS_FREE) && ListenService.running) { on ->
+            if (on) {
+                if (!VoiceLoop.hasMic(c)) { requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), 31); say("Pehle mic ki ijazat dijiye, phir ye switch dobara chalu kijiye.") }
+                else { askNotif(); ListenService.start(c); say("Hands-free chalu kar diya.") }
+            } else { ListenService.stop(c); say("Hands-free band kar diya.") }
+        }
+        f.edit("Wake phrase (jaise: Hey Ananya)", S.str(S.WAKE_PHRASE), "Hey Ananya") { S.putStr(S.WAKE_PHRASE, it.trim().ifBlank { "Hey Ananya" }) }
+        f.text("Hey Ananya, Hey Alter aur Hey Jarvis teeno hamesha chalte hain. Hindi pehchaan poori tarah sahi nahi hoti, kabhi kabhi do-teen baar bolna pad sakta hai.")
+        f.check("Phone restart ke baad hands-free wapas chalu karne ka notification do", S.bool(S.BOOT_START)) { S.putBool(S.BOOT_START, it) }
+        f.seek("Jawab ke baad kitni der aur sunu (follow-up)", 3, 30, S.int(S.FOLLOWUP_SEC), { "$it second" }) { S.putInt(S.FOLLOWUP_SEC, it) }
+        f.check("Bolkar diye goal ko phone par chalao (bina app khole)", S.bool(S.VOICE_GOAL)) { S.putBool(S.VOICE_GOAL, it) }
+        f.check("Wake phrase ke baad baat-cheet ka screen kholo", S.bool(S.SHOW_CONV)) { S.putBool(S.SHOW_CONV, it) }
+        f.check("Doosre apps ke upar chhota Roko button (overlay ijazat chahiye)", S.bool(S.SHOW_OVERLAY)) { on ->
+            S.putBool(S.SHOW_OVERLAY, on)
+            if (on && !android.provider.Settings.canDrawOverlays(c)) startActivity(Intent(c, PermissionsActivity::class.java))
+        }
+        f.button("Battery ki chhoot maango", "Battery optimisation se app ko bahar rakhne ka screen kholo") {
+            Perms.find("battery")?.open?.invoke(c)
+        }
+        val modelMsg = f.text(modelText())
+        modelMsg.accessibilityLiveRegion = android.view.View.ACCESSIBILITY_LIVE_REGION_POLITE
+        f.button("Hindi wake model download karo (44 MB)", "Offline Hindi wake word model download karo, lagbhag 44 megabyte") {
+            if (VoskModel.ready(c)) { say("Model pehle se download hai."); return@button }
+            if (VoskModel.downloading) { say("Download chal raha hai."); return@button }
+            say("Download shuru. Wi-Fi par karna behtar hai.")
+            VoskModel.download(c.applicationContext, { p -> runOnUiThread { modelMsg.text = "Model download: $p%" } },
+                { ok, m -> runOnUiThread { modelMsg.text = modelText(); say(m); if (ok && ListenService.running) { VoiceLoop.stop(); VoiceLoop.start(c) } } })
+        }
+        f.button("Permissions setup kholo", "Saari ijazatein, karan ke saath, ek jagah") { startActivity(Intent(c, PermissionsActivity::class.java)) }
+        f.button("Baat-cheet screen kholo", "Voice conversation ka screen kholo") { startActivity(Intent(c, ConversationActivity::class.java)) }
+
         // ---------- tools ----------
         f.heading("Tools")
         val names = mapOf("screen" to "Screen padhna aur tap, type, scroll", "apps" to "Apps kholna", "web" to "Internet search aur link", "youtube" to "YouTube",
-            "remind" to "Reminders", "weather" to "Mausam", "memory" to "Yaad rakhna (remember)", "notes" to "Notes", "askuser" to "Goal mode mein mujhse sawaal poochna")
-        for (id in S.TOOL_IDS) f.check(names[id] ?: id, S.toolOn(id)) { S.putBool(S.toolKey(id), it) }
+            "remind" to "Reminders", "weather" to "Mausam", "memory" to "Yaad rakhna (remember)", "notes" to "Notes", "askuser" to "Goal mode mein mujhse sawaal poochna",
+            "call" to "Contact ko call karna (pehle haan poochti hai)", "sms" to "SMS padhna aur bhejna (bhejne se pehle haan poochti hai)",
+            "contacts" to "Contacts mein number dhundhna", "torch" to "Torch (flashlight)", "volume" to "Awaaz aur brightness badalna",
+            "media" to "Music play, pause, next", "alarm" to "Alarm aur timer", "whatsapp" to "WhatsApp message (pehle haan poochti hai)",
+            "location" to "Mausam ke liye andaaza wali location", "battery" to "Battery kitni hai batana",
+            "notiread" to "Notifications bolkar sunana (Notification access chahiye)")
+        f.text("Neeche har kaam ka apna switch hai. Switch chalu karne par, zarurat ki ijazat tabhi maangi jaati hai, pehle nahi.")
+        for (id in S.TOOL_IDS) f.check(names[id] ?: id, S.toolOn(id)) { on -> S.putBool(S.toolKey(id), on); if (on) askForTool(id) }
+        f.button("Saari ijazatein ek jagah dekho", "Permissions setup screen kholo, jahan har ijazat ka karan likha hai") {
+            startActivity(Intent(c, PermissionsActivity::class.java))
+        }
 
         // ---------- memory ----------
         f.heading("Yaadein")
@@ -133,6 +176,8 @@ class SettingsActivity : AppCompatActivity() {
                 .setNegativeButton("Nahi", null).show()
         }
 
+        FeatureSettings.build(this, f, { say(it) }, { runOnUiThread { recreate() } })
+
         // ---------- backup ----------
         f.heading("Settings ka backup")
         f.button("Settings export karo (JSON file)", "Settings ko file mein save karo. Keys isme nahi jaati") { exportLauncher.launch("alter-ananya-settings.json") }
@@ -142,6 +187,33 @@ class SettingsActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+    }
+
+    private fun modelText(): String {
+        val engine = S.str(S.WAKE_ENGINE_NOTE)
+        val m = when {
+            VoskModel.ready(this) -> "Offline Hindi wake model: download ho chuka hai."
+            VoskModel.downloading -> "Offline Hindi wake model download ho raha hai: ${VoskModel.percent}%"
+            else -> "Offline Hindi wake model abhi nahi hai. Nahi hone par phone ki speech service se kaam chalta hai (beep kabhi kabhi sunai de sakti hai)."
+        }
+        return if (engine.isBlank()) m else "$m $engine"
+    }
+
+    private fun askNotif() {
+        if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 32)
+    }
+
+    /** a tool was switched on: ask only for what it needs, now */
+    private fun askForTool(id: String) {
+        val ids = Perms.forTool(id)
+        val rt = Perms.missingRuntime(this, ids)
+        val sp = Perms.missingSpecial(this, ids)
+        if (rt.isNotEmpty()) requestPermissions(rt, 33)
+        if (sp.isNotEmpty()) {
+            say("Is tool ke liye ${sp.first().title} chahiye. Permissions setup khol rahi hoon.")
+            startActivity(Intent(this, PermissionsActivity::class.java))
+        }
     }
 
     private fun a11yStatus(): String =

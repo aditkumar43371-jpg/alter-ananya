@@ -49,17 +49,27 @@ object Tools {
         else -> "mausam badalta hua"
     }
 
-    fun weather(cityIn: String): String {
-        val city = cityIn.trim().ifBlank { S.str(S.CITY).trim() }
-        if (city.isBlank()) return "Kaun se sheher ka mausam bataun? Sheher ka naam bataiye, ya Settings mein apna sheher daal dijiye."
+    fun weather(ctx: Context, cityIn: String): String {
+        var city = cityIn.trim()
+        var lat = 0.0
+        var lon = 0.0
+        var name = city
+        var have = false
+        if (city.isBlank()) {
+            PhoneTools.lastLocation(ctx)?.let { lat = it.first; lon = it.second; name = "Aapke yahan"; have = true }
+            if (!have) city = S.str(S.CITY).trim()
+        }
+        if (!have && city.isBlank()) return "Kaun se sheher ka mausam bataun? Sheher ka naam bataiye, ya Settings mein apna sheher daal dijiye."
         return try {
-            val g = JSONObject(Net.get("https://geocoding-api.open-meteo.com/v1/search?name=" + URLEncoder.encode(city, "UTF-8") + "&count=1&language=en&format=json"))
-            val res = g.optJSONArray("results")
-            if (res == null || res.length() == 0) return "$city naam ka sheher mujhe nahi mila."
-            val r0 = res.getJSONObject(0)
-            val lat = r0.getDouble("latitude")
-            val lon = r0.getDouble("longitude")
-            val name = r0.optString("name", city)
+            if (!have) {
+                val g = JSONObject(Net.get("https://geocoding-api.open-meteo.com/v1/search?name=" + URLEncoder.encode(city, "UTF-8") + "&count=1&language=en&format=json"))
+                val res = g.optJSONArray("results")
+                if (res == null || res.length() == 0) return "$city naam ka sheher mujhe nahi mila."
+                val r0 = res.getJSONObject(0)
+                lat = r0.getDouble("latitude")
+                lon = r0.getDouble("longitude")
+                name = r0.optString("name", city)
+            }
             val url = "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon" +
                 "&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m" +
                 "&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&forecast_days=2"
@@ -92,8 +102,8 @@ object Tools {
         val uri = if (q.isEmpty()) Uri.parse("https://www.youtube.com")
         else Uri.parse("https://www.youtube.com/results?search_query=" + URLEncoder.encode(q, "UTF-8"))
         return try {
-            val i = Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            ctx.startActivity(i)
+            val i = Intent(Intent.ACTION_VIEW, uri)
+            if (!Launch.start(ctx, i)) throw RuntimeException("x")
             if (q.isEmpty()) "YouTube khol di." else "YouTube par '$q' khol di."
         } catch (t: Throwable) {
             "YouTube khol nahi paayi."
@@ -104,7 +114,7 @@ object Tools {
         val u = url.trim()
         if (!u.startsWith("http://") && !u.startsWith("https://")) return "Ye link sahi nahi lag raha."
         return try {
-            ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            if (!Launch.start(ctx, Intent(Intent.ACTION_VIEW, Uri.parse(u)))) throw RuntimeException("x")
             "Link khol diya."
         } catch (t: Throwable) { "Link khol nahi paayi." }
     }
@@ -126,8 +136,7 @@ object Tools {
         if (best == null) return "'$name' naam ka app nahi mila."
         val li = pm.getLaunchIntentForPackage(best.second) ?: return "${best.first} khol nahi paayi."
         return try {
-            li.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            ctx.startActivity(li)
+            if (!Launch.start(ctx, li)) throw RuntimeException("x")
             "${best.first} khol diya."
         } catch (t: Throwable) { "${best.first} khol nahi paayi." }
     }
@@ -191,7 +200,7 @@ object Tools {
     fun run(ctx: Context, o: JSONObject): String {
         val tool = o.optString("tool")
         return when (tool) {
-            "weather" -> if (S.toolOn("weather")) weather(o.optString("city")) else "Weather tool band hai."
+            "weather" -> if (S.toolOn("weather")) weather(ctx, o.optString("city")) else "Weather tool band hai."
             "youtube" -> if (S.toolOn("youtube")) youtube(ctx, o.optString("query")) else "YouTube tool band hai."
             "reminder" -> {
                 if (!S.toolOn("remind")) "Reminder tool band hai."
@@ -208,7 +217,7 @@ object Tools {
             "web_search" -> if (S.toolOn("web")) webSearch(o.optString("query")) else "Web search band hai."
             "open_url" -> if (S.toolOn("web")) openUrl(ctx, o.optString("url")) else "Web tool band hai."
             "open_app" -> if (S.toolOn("apps")) openApp(ctx, o.optString("name")) else "Apps tool band hai."
-            else -> "Ye tool mujhe nahi aata."
+            else -> PhoneTools.run(ctx, o) ?: "Ye tool mujhe nahi aata."
         }
     }
 }
@@ -219,6 +228,7 @@ object Notifier {
     const val CH_ASK = "ask"
     const val ID_AGENT = 7001
     const val ID_ASK = 7002
+    const val ID_BOOT = 7003
 
     fun ensure(ctx: Context) {
         if (Build.VERSION.SDK_INT < 26) return
@@ -247,13 +257,14 @@ object Notifier {
     private fun act(ctx: Context, action: String, code: Int): PendingIntent =
         PendingIntent.getBroadcast(ctx, code, Intent(ctx, AgentReceiver::class.java).setAction(action), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
 
-    fun agentOngoing(ctx: Context, goal: String, step: Int, limit: Int) {
+    fun agentOngoing(ctx: Context, goal: String, step: Int, limit: Int, paused: Boolean = false) {
         try {
             val open = PendingIntent.getActivity(ctx, 1, Intent(ctx, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
             val n = builder(ctx, CH_AGENT).setSmallIcon(R.drawable.ic_launcher)
-                .setContentTitle("Ananya goal par kaam kar rahi hai (step $step/$limit)")
+                .setContentTitle(if (paused) "Ananya ruki hui hai (step $step/$limit)" else "Ananya goal par kaam kar rahi hai (step $step/$limit)")
                 .setContentText(goal).setOngoing(true).setContentIntent(open)
                 .addAction(android.app.Notification.Action.Builder(null, "ROKO", act(ctx, AgentReceiver.STOP, 11)).build())
+                .addAction(android.app.Notification.Action.Builder(null, if (paused) "Jaari rakho" else "Pause", act(ctx, if (paused) AgentReceiver.RESUME else AgentReceiver.PAUSE, 14)).build())
                 .build()
             nm(ctx).notify(ID_AGENT, n)
         } catch (_: Throwable) { }
@@ -274,6 +285,20 @@ object Notifier {
     }
 
     fun cancelAsk(ctx: Context) { try { nm(ctx).cancel(ID_ASK) } catch (_: Throwable) { } }
+
+    fun bootTap(ctx: Context) {
+        try {
+            val i = Intent(ctx, ConversationActivity::class.java).putExtra("autostart", true).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val pi = PendingIntent.getActivity(ctx, 5, i, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            val n = builder(ctx, CH_ASK).setSmallIcon(R.drawable.ic_launcher)
+                .setContentTitle("Hands-free chalu karne ke liye dabaiye")
+                .setContentText("Phone restart hua hai. Ek baar dabane se Ananya sunna shuru kar degi.")
+                .setContentIntent(pi).setAutoCancel(true).build()
+            nm(ctx).notify(ID_BOOT, n)
+        } catch (_: Throwable) { }
+    }
+
+    fun cancelBoot(ctx: Context) { try { nm(ctx).cancel(ID_BOOT) } catch (_: Throwable) { } }
 }
 
 class ReminderReceiver : BroadcastReceiver() {
@@ -295,6 +320,16 @@ class ReminderReceiver : BroadcastReceiver() {
 
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
-        if (intent.action == Intent.ACTION_BOOT_COMPLETED) Tools.rescheduleAll(ctx)
+        if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
+        Tools.rescheduleAll(ctx)
+        try { Routines.schedule(ctx); Proactive.scheduleCheckins(ctx) } catch (_: Throwable) { }
+        if (S.bool(S.HANDS_FREE) && S.bool(S.BOOT_START) && VoiceLoop.hasMic(ctx)) {
+            if (Build.VERSION.SDK_INT <= 29) {
+                try { ListenService.start(ctx) } catch (_: Throwable) { Notifier.bootTap(ctx) }
+            } else {
+                // Android 11 and later do not let an app open the microphone from the background after a restart: one tap is needed
+                Notifier.bootTap(ctx)
+            }
+        }
     }
 }

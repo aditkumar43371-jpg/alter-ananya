@@ -66,8 +66,28 @@ object Local {
             if (l in NO) return "Theek hai, kuch nahi hataya."
         }
 
+        // ---- pause / resume of a running goal (stop words are handled by the voice loop) ----
+        if (Agent.running && Safety.on()) {
+            val w = l.trim().trimEnd('.', '!')
+            if (w in setOf("pause", "thehro", "ruk jao zara", "ek minute", "ek minute ruko", "thodi der ruko", "hold on", "wait")) { Safety.pause(ctx); return "Ruk gayi. Aage badhne ke liye 'aage badho' boliye." }
+            if (w in setOf("resume", "aage badho", "jaari rakho", "continue", "chalu karo", "phir se shuru karo")) { Safety.resume(ctx); return "Theek hai, aage badh rahi hoon." }
+        }
+
         // ---- memory ----
         if (S.toolOn("memory")) {
+            if (S.bool(S.F_MEMCATS) && (l.contains("yaad") || l.contains("remember")) && (l.contains("kya") || l.contains("what") || l.contains("batao"))) {
+                val cat = when {
+                    l.contains("personal") -> "personal"
+                    l.contains("pasand") || l.contains("preference") -> "preferences"
+                    l.contains("routine") -> "routines"
+                    l.contains("logon") || l.contains("logo") || l.contains("people") || l.contains("rishte") -> "people"
+                    else -> ""
+                }
+                if (cat.isNotEmpty()) {
+                    val ls = MemoryStore.byCat(cat)
+                    return if (ls.isEmpty()) "${MemoryStore.catLabel(cat)} mein abhi kuch yaad nahi hai." else "${MemoryStore.catLabel(cat)} ke baare mein: " + ls.joinToString(". ") { it.text }
+                }
+            }
             if (l.contains("kya yaad hai") || l.contains("kya kya yaad") || l.contains("what do you remember") || l.contains("meri yaadein") || l == "recall" || l == "yaadein dikhao") {
                 return recallText("")
             }
@@ -126,7 +146,7 @@ object Local {
         // ---- weather ----
         if (S.toolOn("weather") && words(t).size <= 9 && (l.contains("mausam") || l.contains("weather") || l.contains("मौसम"))) {
             val city = words(t).filter { it !in WSTOP }.joinToString(" ")
-            return Tools.weather(city)
+            return Tools.weather(ctx, city)
         }
 
         // ---- youtube ----
@@ -141,8 +161,9 @@ object Local {
         val t = x.trim().trimEnd('.', '!')
         if (t.isEmpty()) return "Kya yaad rakhun?"
         if (!S.bool(S.MEMORY_ON)) return "Memory abhi band hai. Settings mein chalu kijiye, phir yaad rakhungi."
+        val shown = if (S.bool(S.MEM_REDACT)) Redact.text(t) else t
         MemoryStore.remember(t)
-        return "Theek hai, yaad rakh liya: $t."
+        return if (S.bool(S.F_MEMCATS)) "Theek hai, yaad rakh liya (${MemoryStore.catLabel(MemoryStore.guessCat(shown))}): $shown." else "Theek hai, yaad rakh liya: $shown."
     }
 
     private fun recallText(q: String): String {
@@ -158,16 +179,22 @@ object Brain {
 
     fun noKeyText() = "Pehle Settings mein apni Gemini key daaliye (aistudio.google.com par free milti hai). Tab tak main yaad rakhna, notes, mausam aur YouTube jaise kaam bina key ke kar sakti hoon."
 
-    fun respond(ctx: Context, text: String): Reply {
+    /** the safe, redacted text of what the user said, for the model */
+    private fun forModel(h: List<Msg>): List<Msg> = if (S.bool(S.MEM_REDACT)) h.map { Msg(it.role, Redact.text(it.text)) } else h
+
+    fun respond(ctx: Context, text: String, fromRoutine: Boolean = false): Reply {
         Local.handle(ctx, text)?.let { return Reply(it) }
+        if (!fromRoutine) Routines.handle(ctx, text)?.let { return Reply(it) }
+        if (ScreenQ.matches(text)) return Reply(ScreenQ.answer(ctx, text))
+        Emotion.analyse(text)
         if (!Llm.anyKey()) return Reply(noKeyText(), true)
         Llm.resetAbort()
-        val r = Llm.chat(Prompts.chatSystem() + Prompts.chatTools(), ChatLog.history())
+        val r = Llm.chat(Prompts.chatSystem() + Prompts.chatTools(), forModel(ChatLog.history()))
         if (!r.ok) {
             val e = r.error ?: ""
             return Reply(if (e == "NO_KEY") noKeyText() else "Abhi jawab nahi la paayi. $e", true)
         }
-        var out = r.text ?: ""
+        var out = Emotion.stripTag(r.text ?: "")
         val m = tagRe.find(out)
         if (m != null) {
             out = out.replace(tagRe, "").trim()
@@ -177,6 +204,33 @@ object Brain {
             } catch (t: Throwable) { "" }
             if (res.isNotBlank()) out = if (out.isBlank()) res else "$out\n$res"
         }
+        if (!fromRoutine) AutoLearn.suggest(text)?.let { out = (out + " " + it).trim() }
         return Reply(out.ifBlank { "Hmm, kuch kehna chahti thi par shabd nahi mile. Phir se poochhiye." })
+    }
+}
+
+/** Suggests facts to remember, but only saves after a spoken yes. Everything stays on the phone. */
+object AutoLearn {
+    private val pats = listOf(
+        Regex("\\bmera naam ([\\p{L}]+(?: [\\p{L}]+)?) hai", RegexOption.IGNORE_CASE) to "Aapka naam %s hai",
+        Regex("\\bmy name is ([\\p{L}]+(?: [\\p{L}]+)?)", RegexOption.IGNORE_CASE) to "Aapka naam %s hai",
+        Regex("\\bmujhe (.{3,50}?) (?:pasand|bahut pasand) hai", RegexOption.IGNORE_CASE) to "Aapko %s pasand hai",
+        Regex("\\bmain (.{2,40}?) (?:mein|me) rehta hoon|\\bmain (.{2,40}?) (?:mein|me) rehti hoon", RegexOption.IGNORE_CASE) to "Aap %s mein rehte hain",
+        Regex("\\bi live in (.{2,40})", RegexOption.IGNORE_CASE) to "Aap %s mein rehte hain"
+    )
+
+    fun suggest(userText: String): String? {
+        if (!S.bool(S.MEM_AUTOLEARN) || !S.bool(S.MEMORY_ON) || !S.toolOn("memory")) return null
+        if (Local.pending != null) return null
+        val t = Redact.text(userText)
+        for ((re, fmt) in pats) {
+            val m = re.find(t) ?: continue
+            val g = m.groupValues.drop(1).firstOrNull { it.isNotBlank() }?.trim()?.trimEnd('.', '!') ?: continue
+            val fact = fmt.format(g)
+            if (MemoryStore.memories().any { it.text.equals(fact, true) }) return null
+            Local.pending = { MemoryStore.remember(fact); "Theek hai, yaad rakh liya: $fact." }
+            return "Waise, kya main ye yaad rakhun: $fact? Haan ya nahi boliye."
+        }
+        return null
     }
 }

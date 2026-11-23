@@ -18,8 +18,14 @@ object Prompts {
         if (!S.bool(S.MEMORY_ON)) return ""
         val m = MemoryStore.memories().takeLast(40)
         if (m.isEmpty()) return ""
-        return "\n\nUser ke baare mein jo tumhe yaad hai (sirf jab kaam aaye tab use karo, har baar mat dohrao):\n" +
-            m.joinToString("\n") { "- " + it.text }
+        val red = S.bool(S.MEM_REDACT)
+        fun t(x: String) = if (red) Redact.text(x) else x
+        val head = "\n\nUser ke baare mein jo tumhe yaad hai (sirf jab kaam aaye tab use karo, har baar mat dohrao):\n"
+        if (!S.bool(S.F_MEMCATS)) return head + m.joinToString("\n") { "- " + t(it.text) }
+        return head + MemoryStore.CATS.mapNotNull { c ->
+            val l = m.filter { it.cat == c }
+            if (l.isEmpty()) null else "[" + c + "] " + l.joinToString("; ") { t(it.text) }
+        }.joinToString("\n")
     }
 
     private fun who(): String {
@@ -34,7 +40,7 @@ object Prompts {
 
     /** the personality block (tone + its own prompt), safe to combine with the base */
     private fun personaBlock(p: Personality): String =
-        "Abhi ka andaaz (personality) '${p.name}': ${p.tone}. ${p.prompt}"
+        "Abhi ka andaaz (personality) '${p.name}': ${p.tone}. ${p.prompt} " + Tone.styleLine(p)
 
     /** normal conversation */
     fun chatSystem(): String {
@@ -52,7 +58,7 @@ Phone par kaam karwane ke liye user ko "Goal mode" ka option batao (app mein mod
 ${langLine(p)}
 ${who()}
 ${personaBlock(p)}
-Abhi ka samay: ${nowText()}.${memoryBlock()}
+Abhi ka samay: ${nowText()}.${Proactive.contextLine()}${Emotion.promptLine()}${memoryBlock()}
 """.trim()
     }
 
@@ -80,8 +86,10 @@ Abhi ka samay: ${nowText()}.${memoryBlock()}
         if (S.toolOn("memory")) tools.append("- {\"tool\":\"remember\",\"text\":\"...\"} : sirf jab user ne khud kaha ho yaad rakhne ko\n")
         if (S.toolOn("notes")) tools.append("- {\"tool\":\"note\",\"text\":\"...\"}\n")
         if (S.toolOn("askuser")) tools.append("- {\"tool\":\"ask_user\",\"question\":\"...\"} : user se sawaal poochta hai aur uska jawab deta hai\n")
+        tools.append(phoneToolLines())
         tools.append("- {\"tool\":\"finish\",\"summary\":\"user ko batane layak chhota natija\"} : goal poora hone par\n")
         tools.append("- {\"tool\":\"stuck\",\"reason\":\"...\"} : agar aage badh nahi pa rahi\n")
+        tools.append("- {\"tool\":\"hand_off\",\"what\":\"password / OTP / card detail\"} : jab screen par password, OTP, PIN ya card detail chahiye; user ko khud bharne do aur uska haan suno\n")
 
         val strictLine = if (strict) "User ne 'hamesha poochho' mode chuna hai: har badlaav wale kaam se pehle permission lo (code bhi khud poochhega)."
         else "Sensitive kaam se pehle permission zaroori hai (code bhi khud poochhega)."
@@ -111,6 +119,36 @@ Andaaz: ${p.tone}. Abhi ka samay: ${nowText()}.${memoryBlock()}
 Tum ek research helper ho. Internet se taaza jaankari dekhkar sawaal ka seedha, chhota jawab do (zyada se zyada 6 vaakya), bina markdown ke. Jahan pakka nahi ho wahan saaf likho. ${Languages.current().instruction}
 """.trim()
 
+    /** the phone tools, one line each, only for the ones the user switched on */
+    fun phoneToolLines(): String {
+        val t = StringBuilder()
+        if (S.toolOn("call")) t.append("- {\"tool\":\"call\",\"name\":\"contact ka naam\"} ya {\"tool\":\"call\",\"number\":\"...\"} : call lagata hai (app khud haan/nahi poochhegi)\n")
+        if (S.toolOn("sms")) {
+            t.append("- {\"tool\":\"sms_send\",\"name\":\"...\",\"text\":\"...\"} : SMS bhejta hai (app khud haan/nahi poochhegi)\n")
+            t.append("- {\"tool\":\"sms_read\",\"count\":3} : aakhri SMS padhta hai\n")
+        }
+        if (S.toolOn("contacts")) t.append("- {\"tool\":\"contact\",\"name\":\"...\"} : contact ka number batata hai\n")
+        if (S.toolOn("torch")) t.append("- {\"tool\":\"torch\",\"state\":\"on\" ya \"off\" ya \"toggle\"}\n")
+        if (S.toolOn("volume")) {
+            t.append("- {\"tool\":\"volume\",\"stream\":\"media\" ya \"ring\" ya \"alarm\" ya \"call\",\"level\":0 se 100 ya \"up\" ya \"down\"}\n")
+            t.append("- {\"tool\":\"brightness\",\"level\":0 se 100 ya \"up\" ya \"down\"}\n")
+        }
+        if (S.toolOn("media")) t.append("- {\"tool\":\"media\",\"action\":\"play\" ya \"pause\" ya \"next\" ya \"previous\" ya \"stop\"}\n")
+        if (S.toolOn("alarm")) {
+            t.append("- {\"tool\":\"alarm\",\"at\":\"HH:mm\",\"label\":\"...\",\"tomorrow\":false}\n")
+            t.append("- {\"tool\":\"timer\",\"in_minutes\":N}\n")
+        }
+        if (S.toolOn("whatsapp")) t.append("- {\"tool\":\"whatsapp\",\"name\":\"...\",\"text\":\"...\"} : WhatsApp message (app khud haan/nahi poochhegi)\n")
+        if (S.toolOn("battery")) t.append("- {\"tool\":\"battery\"} : battery kitni hai\n")
+        if (S.bool(S.F_SUPER)) {
+            t.append("- {\"tool\":\"dnd\",\"state\":\"on\" ya \"off\"} : Disturb mat karo\n")
+            t.append("- {\"tool\":\"open_settings\",\"what\":\"wifi\" ya \"bluetooth\" ya \"display\" ya \"sound\" ya \"battery\" ya \"location\"} : us settings ka screen kholta hai\n")
+            if (S.toolOn("whatsapp")) t.append("- {\"tool\":\"whatsapp_call\",\"name\":\"...\"} : WhatsApp call (app khud haan/nahi poochhegi)\n")
+        }
+        if (S.toolOn("notiread")) t.append("- {\"tool\":\"notifications\",\"count\":5} : aaye hue notifications padhta hai\n")
+        return t.toString()
+    }
+
     /** appended to the chat prompt: how to ask the app to run a tool */
     fun chatTools(): String {
         val t = StringBuilder()
@@ -120,6 +158,7 @@ Tum ek research helper ho. Internet se taaza jaankari dekhkar sawaal ka seedha, 
         if (S.toolOn("notes")) t.append("- {\"tool\":\"note\",\"text\":\"...\"}\n")
         if (S.toolOn("memory") && S.bool(S.MEMORY_ON)) t.append("- {\"tool\":\"remember\",\"text\":\"...\"} : sirf jab user kahe ki ye yaad rakho\n")
         if (S.toolOn("web")) t.append("- {\"tool\":\"web_search\",\"query\":\"...\"} : taaza khabar ya aisi jaankari jo tumhe pakki nahi pata\n")
+        t.append(phoneToolLines())
         if (t.isEmpty()) return ""
         return "\n\nTools: agar user saaf-saaf inme se koi kaam maange, to apne jawab ke bilkul aakhir mein ek alag line likho: [[tool: {JSON}]] (sirf ek tool, ek hi line). Tool ka natija app khud user ko bata dega, isliye tum bas ek chhoti si line bolo jaise 'Abhi dekhti hoon'. Is line ke baare mein user ko kuch mat batao. Tools:\n" + t.toString()
     }

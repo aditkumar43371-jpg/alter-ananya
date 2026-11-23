@@ -47,7 +47,47 @@ object S {
     const val OR_MODEL = "openrouterModel"
     const val CUSTOM_PERS = "customPersonalities"
 
-    val TOOL_IDS = listOf("screen", "apps", "web", "youtube", "remind", "weather", "memory", "notes", "askuser")
+    const val HANDS_FREE = "handsFree"
+    const val WAKE_PHRASE = "wakePhrase"
+    const val BOOT_START = "bootStart"
+    const val FOLLOWUP_SEC = "followupSec"
+    const val VOICE_GOAL = "voiceGoal"
+    const val SHOW_CONV = "showConversation"
+    const val SHOW_OVERLAY = "showOverlay"
+    const val WAKE_ENGINE_NOTE = "wakeEngineNote"
+
+    // ---- v1.1 features: each has its own switch ----
+    const val F_SAFETY = "f_safety"          // 3 safety layer
+    const val F_VERIFY = "f_verify"          // 3 check the screen after every action
+    const val F_TONE = "f_tone"              // 1 tone presets
+    const val TONE_PRESET = "tonePreset"
+    const val F_PERSCUSTOM = "f_perscustom"  // 2 per-personality edits
+    const val PERS_OVR = "persOverrides"
+    const val F_SCREENQ = "f_screenq"        // 4 screen understanding
+    const val F_MEMCATS = "f_memcats"        // 5 memory categories
+    const val MEM_REDACT = "memRedact"
+    const val MEM_ENCRYPT = "memEncrypt"
+    const val MEM_AUTOLEARN = "memAutolearn"
+    const val F_EMO = "f_emo"                // 6 emotional intelligence
+    const val F_PROACTIVE = "f_proactive"    // 7 proactive context
+    const val PRO_QUIET = "proQuiet"
+    const val QUIET_FROM = "quietFrom"
+    const val QUIET_TO = "quietTo"
+    const val PRO_PRIVACY = "proPrivacy"
+    const val PRO_MORNING = "proMorning"
+    const val PRO_EVENING = "proEvening"
+    const val PRO_BATTERY = "proBattery"
+    const val PRO_SENSORS = "proSensors"
+    const val F_ROUTINES = "f_routines"      // 8 routines
+    const val ROUTINES = "routines"
+    const val F_SUPER = "f_super"            // 9 extra phone tools (dnd, settings, whatsapp call, read screen)
+
+    /** switches for the older tools (on by default) and the phone tools (see PHONE_ON_BY_DEFAULT) */
+    val TOOL_IDS = listOf("screen", "apps", "web", "youtube", "remind", "weather", "memory", "notes", "askuser",
+        "call", "sms", "contacts", "torch", "volume", "media", "alarm", "whatsapp", "location", "battery", "notiread")
+    /** phone tools that need no permission and cannot cost money or message anybody */
+    val PHONE_ON_BY_DEFAULT = setOf("torch", "media", "alarm", "battery")
+    private val PHONE_IDS = setOf("call", "sms", "contacts", "torch", "volume", "media", "alarm", "whatsapp", "location", "battery", "notiread")
     fun toolKey(id: String) = "tool_$id"
 
     private val DEF_GEMINI = "gemini-flash-latest\ngemini-flash-lite-latest\ngemini-2.5-flash\ngemini-2.5-flash-lite"
@@ -78,7 +118,25 @@ object S {
         m[GROQ_MODEL] = "llama-3.3-70b-versatile"
         m[OR_MODELS] = DEF_OR
         m[OR_MODEL] = "openrouter/free"
-        for (t in TOOL_IDS) m[toolKey(t)] = true
+        m[HANDS_FREE] = false
+        m[WAKE_PHRASE] = "hey ananya"
+        m[BOOT_START] = true
+        m[FOLLOWUP_SEC] = 10
+        m[VOICE_GOAL] = false
+        m[SHOW_CONV] = false
+        m[SHOW_OVERLAY] = false
+        m[WAKE_ENGINE_NOTE] = ""
+        m[F_SAFETY] = true; m[F_VERIFY] = true
+        m[F_TONE] = true; m[TONE_PRESET] = "normal"
+        m[F_PERSCUSTOM] = true; m[PERS_OVR] = "{}"
+        m[F_SCREENQ] = true
+        m[F_MEMCATS] = true; m[MEM_REDACT] = true; m[MEM_ENCRYPT] = false; m[MEM_AUTOLEARN] = false
+        m[F_EMO] = false
+        m[F_PROACTIVE] = false; m[PRO_QUIET] = true; m[QUIET_FROM] = 22; m[QUIET_TO] = 7
+        m[PRO_PRIVACY] = true; m[PRO_MORNING] = false; m[PRO_EVENING] = false; m[PRO_BATTERY] = false; m[PRO_SENSORS] = false
+        m[F_ROUTINES] = true; m[ROUTINES] = "[]"
+        m[F_SUPER] = true
+        for (t in TOOL_IDS) m[toolKey(t)] = if (t in PHONE_IDS) (t in PHONE_ON_BY_DEFAULT) else true
         m
     }
 
@@ -151,9 +209,10 @@ object S {
     fun exportJson(): String {
         val root = JSONObject()
         root.put("app", "alter-ananya")
-        root.put("version", 1)
+        root.put("version", 2)
         val st = JSONObject()
         for ((k, d) in defaults) {
+            if (k == HANDS_FREE || k == WAKE_ENGINE_NOTE) continue
             when (d) {
                 is String -> st.put(k, str(k))
                 is Boolean -> st.put(k, bool(k))
@@ -175,14 +234,22 @@ object S {
         var n = 0
         val ed = sp.edit()
         for ((k, d) in defaults) {
-            if (!st.has(k)) continue
+            if (!st.has(k) || k == HANDS_FREE || k == WAKE_ENGINE_NOTE) continue
             try {
                 when (d) {
-                    is String -> ed.putString(k, st.getString(k).take(8000))
+                    is String -> {
+                        var v = st.getString(k).take(8000)
+                        if (k == PERS_OVR) v = Personalities.sanitizeOverrides(v)
+                        if (k == ROUTINES) v = Routines.sanitize(v)
+                        if (k == TONE_PRESET && Tone.byId(v) == null) v = "normal"
+                        ed.putString(k, v)
+                    }
                     is Boolean -> ed.putBoolean(k, st.getBoolean(k))
                     is Int -> {
                         var v = st.getInt(k)
                         if (k == STEP_LIMIT) v = v.coerceIn(3, 100)
+                        if (k == FOLLOWUP_SEC) v = v.coerceIn(4, 30)
+                        if (k == QUIET_FROM || k == QUIET_TO) v = v.coerceIn(0, 23)
                         ed.putInt(k, v)
                     }
                     is Float -> {

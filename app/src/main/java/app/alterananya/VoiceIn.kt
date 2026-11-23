@@ -32,10 +32,10 @@ class VoiceIn(ctx: Context) {
             var done = false
             r.setRecognitionListener(object : RecognitionListener {
                 override fun onReadyForSpeech(params: Bundle?) { listening = true }
-                override fun onBeginningOfSpeech() {}
-                override fun onRmsChanged(rmsdB: Float) {}
+                override fun onBeginningOfSpeech() { Emotion.speechStart() }
+                override fun onRmsChanged(rmsdB: Float) { Emotion.rms(rmsdB) }
                 override fun onBufferReceived(buffer: ByteArray?) {}
-                override fun onEndOfSpeech() {}
+                override fun onEndOfSpeech() { Emotion.speechEnd() }
                 override fun onEvent(eventType: Int, params: Bundle?) {}
                 override fun onPartialResults(partialResults: Bundle?) {
                     val l = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)

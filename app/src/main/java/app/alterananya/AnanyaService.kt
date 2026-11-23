@@ -136,6 +136,19 @@ class AnanyaService : AccessibilityService() {
         return "Dabane mein kaamyabi nahi mili."
     }
 
+    /** presses the first button whose label matches one of the words (used for WhatsApp Send). Never used on password fields. */
+    fun clickLabel(labels: List<String>): Boolean {
+        readScreen()
+        for (l in labels) {
+            val n = findByText(l) ?: continue
+            if (n.isPassword) continue
+            val lab = ((n.text?.toString() ?: "") + " " + (n.contentDescription?.toString() ?: "")).trim()
+            if (lab.length > 20) continue
+            if (click(null, l).startsWith("Dabaya")) return true
+        }
+        return false
+    }
+
     private fun tap(x: Float, y: Float): Boolean {
         return try {
             val p = Path().apply { moveTo(x, y) }
